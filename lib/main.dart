@@ -9,22 +9,24 @@
 //  - Parsing teks struk (Regex): merchant, tanggal, total, daftar barang
 //  - Klasifikasi kategori per barang: TF-IDF + Multinomial Naive Bayes yang
 //    ditulis langsung dalam Dart (dilatih dari data contoh kecil di bawah)
-//  - Pratinjau & koreksi, simpan, dashboard, riwayat, detail, hapus
+//  - Pratinjau & koreksi, simpan, dashboard, riwayat, detail, edit, hapus
 //
 // Yang BELUM aktif di versi ini:
 //  - OCR kamera/galeri (Google ML Kit). Sebagai gantinya, teks struk dipilih
 //    dari contoh atau diketik/ditempel. Hasil parsing & klasifikasi tetap nyata.
 //
-// Satu-satunya dependency tambahan: shared_preferences
-//   flutter pub add shared_preferences
+// Dependencies tambahan:
+//   flutter pub add shared_preferences crypto uuid
 // ============================================================================
 
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 // ============================================================================
 // BAGIAN 1: KONSTANTA & FUNGSI BANTU
@@ -106,15 +108,12 @@ IconData categoryIcon(String? c) {
   }
 }
 
-/// Hash sederhana HANYA untuk demo agar password tidak tersimpan polos.
-/// Bukan keamanan sungguhan. Di versi lengkap, hashing dilakukan backend (bcrypt).
+/// Hash password menggunakan SHA-256 untuk penyimpanan lokal yang lebih aman.
+/// Catatan: di versi produksi, hashing sebaiknya dilakukan di backend (bcrypt/argon2).
 String hashPassword(String password, String email) {
-  var h = 0x811C9DC5;
-  for (final c in '$email::$password::smartreceipt'.codeUnits) {
-    h ^= c;
-    h = (h * 0x01000193) & 0xFFFFFFFF;
-  }
-  return h.toRadixString(16);
+  final key = '$email::$password::smartreceipt_2025';
+  final bytes = utf8.encode(key);
+  return sha256.convert(bytes).toString();
 }
 
 // ============================================================================
@@ -529,6 +528,15 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateTransaction(Tx updated) {
+    final idx = transactions.indexWhere((t) => t.id == updated.id);
+    if (idx == -1) return;
+    transactions[idx] = updated;
+    _sort();
+    _saveTransactions();
+    notifyListeners();
+  }
+
   void clearTransactions() {
     transactions = [];
     _saveTransactions();
@@ -555,6 +563,9 @@ class AppStore extends ChangeNotifier {
 }
 
 final AppStore store = AppStore();
+
+/// Instance UUID untuk generate ID transaksi yang unik dan bebas konflik.
+const _uuid = Uuid();
 
 // ============================================================================
 // BAGIAN 6: MAIN & APLIKASI
@@ -957,7 +968,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _nameCtl = TextEditingController();
   final _emailCtl = TextEditingController();
   final _pwCtl = TextEditingController();
+  final _confirmPwCtl = TextEditingController();
   bool _hidePw = true;
+  bool _hideConfirmPw = true;
   String? _error;
 
   @override
@@ -965,6 +978,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _nameCtl.dispose();
     _emailCtl.dispose();
     _pwCtl.dispose();
+    _confirmPwCtl.dispose();
     super.dispose();
   }
 
@@ -1040,6 +1054,30 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     if (s.length < 8) return 'Password minimal 8 karakter';
                     if (!RegExp(r'\d').hasMatch(s)) {
                       return 'Password harus mengandung minimal 1 angka';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _confirmPwCtl,
+                  obscureText: _hideConfirmPw,
+                  decoration: fieldDecoration(
+                    'Konfirmasi Password',
+                    icon: Icons.lock_outline,
+                    suffix: IconButton(
+                      icon: Icon(_hideConfirmPw
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined),
+                      onPressed: () => setState(() => _hideConfirmPw = !_hideConfirmPw),
+                    ),
+                  ),
+                  validator: (v) {
+                    if (v == null || v.isEmpty) {
+                      return 'Konfirmasi password wajib diisi';
+                    }
+                    if (v != _pwCtl.text) {
+                      return 'Password tidak cocok';
                     }
                     return null;
                   },
@@ -1295,6 +1333,13 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   String _filter = 'Semua';
+  final _searchCtl = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchCtl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1302,9 +1347,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: ListenableBuilder(
         listenable: store,
         builder: (context, _) {
-          final list = _filter == 'Semua'
-              ? store.transactions
-              : store.transactions.where((t) => t.category == _filter).toList();
+          final query = _searchCtl.text.trim().toLowerCase();
+          final list = store.transactions.where((t) {
+            final matchCat = _filter == 'Semua' || t.category == _filter;
+            final matchQuery = query.isEmpty ||
+                t.merchant.toLowerCase().contains(query) ||
+                t.items.any((i) => i.name.toLowerCase().contains(query));
+            return matchCat && matchQuery;
+          }).toList();
           final total = list.fold<double>(0, (s, t) => s + t.total);
 
           return ListView(
@@ -1313,6 +1363,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
               const Text('Riwayat Transaksi',
                   style: TextStyle(
                       fontSize: 24, fontWeight: FontWeight.w700, color: kTextDark)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _searchCtl,
+                onChanged: (_) => setState(() {}),
+                decoration: fieldDecoration('Cari toko atau barang...',
+                    icon: Icons.search,
+                    suffix: _searchCtl.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () {
+                              _searchCtl.clear();
+                              setState(() {});
+                            },
+                          )
+                        : null),
+              ),
               const SizedBox(height: 12),
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -1439,15 +1505,44 @@ class TxDetailScreen extends StatelessWidget {
               ),
             )),
             const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: () => _delete(context),
-              icon: const Icon(Icons.delete_outline, color: kError),
-              label: const Text('Hapus Transaksi', style: TextStyle(color: kError)),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _edit(context),
+                    icon: const Icon(Icons.edit_outlined, color: kPrimary),
+                    label: const Text('Edit', style: TextStyle(color: kPrimary)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _delete(context),
+                    icon: const Icon(Icons.delete_outline, color: kError),
+                    label: const Text('Hapus', style: TextStyle(color: kError)),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _edit(BuildContext context) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PreviewScreen(
+          parsed: const ParsedReceipt(),
+          rawText: '',
+          editTx: tx, // kirim Tx asli untuk mode edit
+        ),
+      ),
+    );
+    if (saved == true && context.mounted) {
+      Navigator.of(context).pop(); // kembali ke riwayat setelah disimpan
+    }
   }
 }
 
@@ -1759,7 +1854,13 @@ class _ItemDraft {
 class PreviewScreen extends StatefulWidget {
   final ParsedReceipt parsed;
   final String rawText;
-  const PreviewScreen({super.key, required this.parsed, required this.rawText});
+  final Tx? editTx; // null = mode tambah baru, non-null = mode edit
+  const PreviewScreen({
+    super.key,
+    required this.parsed,
+    required this.rawText,
+    this.editTx,
+  });
 
   @override
   State<PreviewScreen> createState() => _PreviewScreenState();
@@ -1775,15 +1876,31 @@ class _PreviewScreenState extends State<PreviewScreen> {
   double _lastSum = 0;
   bool _submitted = false;
 
+  bool get _isEditMode => widget.editTx != null;
+
   @override
   void initState() {
     super.initState();
-    final p = widget.parsed;
-    _merchantCtl = TextEditingController(text: p.merchant ?? '');
-    _date = p.date;
-    _dateCtl = TextEditingController(text: _date == null ? '' : fmtDate(_date!));
-    _totalCtl = TextEditingController(text: p.total == null ? '' : plainNumber(p.total!));
-    _items = p.items.map(_ItemDraft.fromParsed).toList();
+    // Mode edit: isi form dari data Tx yang ada
+    if (_isEditMode) {
+      final tx = widget.editTx!;
+      _merchantCtl = TextEditingController(text: tx.merchant);
+      _date = tx.date;
+      _dateCtl = TextEditingController(text: fmtDate(tx.date));
+      _totalCtl = TextEditingController(text: plainNumber(tx.total));
+      _items = tx.items
+          .map((i) => _ItemDraft.fromParsed(
+                ParsedItem(i.name, i.price, i.category, i.probability)))
+          .toList();
+    } else {
+      // Mode tambah baru: isi dari hasil parsing
+      final p = widget.parsed;
+      _merchantCtl = TextEditingController(text: p.merchant ?? '');
+      _date = p.date;
+      _dateCtl = TextEditingController(text: _date == null ? '' : fmtDate(_date!));
+      _totalCtl = TextEditingController(text: p.total == null ? '' : plainNumber(p.total!));
+      _items = p.items.map(_ItemDraft.fromParsed).toList();
+    }
     _lastSum = _itemsSum;
   }
 
@@ -1834,6 +1951,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
       final c = i.category ?? 'Lainnya';
       totals[c] = (totals[c] ?? 0) + (i.priceValue ?? 0);
     }
+    if (totals.isEmpty) return 'Lainnya'; // guard: hindari crash reduce() pada list kosong
     return totals.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
   }
 
@@ -1858,10 +1976,17 @@ class _PreviewScreenState extends State<PreviewScreen> {
       showMessage(context, 'Periksa kembali data yang belum lengkap.', error: true);
       return;
     }
+    // Guard eksplisit: validator tanggal seharusnya sudah mencegah ini,
+    // tapi kita pastikan _date tidak null sebelum disimpan.
+    if (_date == null) {
+      showMessage(context, 'Tanggal transaksi wajib diisi.', error: true);
+      return;
+    }
 
     final total = parseAmount(_totalCtl.text)!;
-    store.addTransaction(Tx(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+    final newTx = Tx(
+      // Mode edit: pertahankan ID lama; mode tambah: buat UUID baru
+      id: _isEditMode ? widget.editTx!.id : _uuid.v4(),
       merchant: _merchantCtl.text.trim(),
       date: _date!,
       total: total,
@@ -1871,9 +1996,15 @@ class _PreviewScreenState extends State<PreviewScreen> {
           .map((i) => TxItem(i.name.text.trim(), i.priceValue!, i.category!,
           i.showProbability ? i.probability : null))
           .toList(),
-    ));
+    );
 
-    showMessage(context, 'Transaksi berhasil disimpan.');
+    if (_isEditMode) {
+      store.updateTransaction(newTx);
+      showMessage(context, 'Transaksi berhasil diperbarui.');
+    } else {
+      store.addTransaction(newTx);
+      showMessage(context, 'Transaksi berhasil disimpan.');
+    }
     Navigator.of(context).pop(true);
   }
 
@@ -1902,7 +2033,9 @@ class _PreviewScreenState extends State<PreviewScreen> {
         p.merchant == null && p.date == null && p.total == null && p.items.isEmpty;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Pratinjau & Validasi Data')),
+      appBar: AppBar(
+        title: Text(_isEditMode ? 'Edit Transaksi' : 'Pratinjau & Validasi Data'),
+      ),
       body: SafeArea(
         child: Form(
           key: _formKey,
