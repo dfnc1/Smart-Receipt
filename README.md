@@ -284,7 +284,7 @@ Dikembangkan sebagai proyek mata kuliah **Pemrograman Mobile Teori** — Semeste
 - **Developer:**    - Dian 
                     - Satria
                     - Reza 
-- **Institusi:** Program Studi Teknik Informatika / Ilmu Komputer
+- **Institusi:** Program Studi Teknik Informatika 
 
 ---
 
