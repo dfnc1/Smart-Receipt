@@ -281,7 +281,9 @@ Didistribusikan di bawah lisensi **MIT License**. Lihat berkas `LICENSE` untuk i
 
 Dikembangkan sebagai proyek mata kuliah **Pemrograman Mobile Teori** — Semester 5.
 
-- **Developer:** Dian ([@your-github-handle](https://github.com))
+- **Developer:**    - Dian 
+                    - Satria
+                    - Reza 
 - **Institusi:** Program Studi Teknik Informatika / Ilmu Komputer
 
 ---
